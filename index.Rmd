@@ -1,0 +1,142 @@
+---
+title: "Course Project Practical Machine Learning"
+author: "Renée Jansen"
+date: "20 April 2017"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Data 
+This project has been based on the research "Qualitative Activity Recognition of Weight Lifting Exercises". More information about the data, as well as the overall original project, can be found in this paper: http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf 
+
+The goal of this project is to predict the manner in which someone performed a fitness exercise. The manner in which the exercise is performed can be classified into classes A to E. Class A means that someone performed the exercise exactly according to the specification, while class B to E indicate varying mistakes someone might have made. The data that have been used to build this model consist of output from sensors that were attached to the person's body and their dumbbell while performing this exercise: accelerometers were placed on the belt, forearm, arm, and dumbell of 6 participants.
+
+```{r, message = FALSE, warning = FALSE}
+library(caret)
+library(parallel)
+library(doParallel)
+```
+
+### Data Preparation & EDA
+For this project, we have used the caret-package to train and test our model. 
+
+The data contained NA-values, as well as blank spaces and #DIV/0! values. In loading the data into R, we have set all of these values to be N/A in order to make processing of the data easier.
+
+Subsequently, the data has been divided into three parts: a training set (60 percent of the data, or 11776 observationg), a validation set and a test set (both 20 percent of the data, or 3923 observations).  In this way, we ensure hold-out validation as we can use the training set to train our models, and the test set in order to give a final estimate of out-of-sample error. In addition, we have used cross-validation in the training of our Random Forest model (see below).
+
+
+```{r}
+data <- read.csv("C:/Users/Renee/Desktop/Studie/Machine Learning/CourseProject/pml-training.csv", na.strings = c("", "NA", "#DIV/0!"))
+
+set.seed(666)
+inTrain <- createDataPartition(y = data$classe, p = 0.6, list = FALSE)
+testing <- data[-inTrain, ]
+training <- data[inTrain, ]
+```
+
+
+Using a for-loop to count the NA's per variable, we have found a large part of the features (100 out of 160) consist for almost 98% of NA's. As these features only provide information about a very limited part of the observation, we have deemed them to be uninformative and excluded them from the dataset going forward. This leaves us with a dataset of 60 variables, containing no NA's at all.
+
+Furthermore, we have removed the first 7 variables from the dataset, which contain information like username, date, and timestamp. As we are looking to predict class from sensor data, these 7 variables will not contribute to our model in a meaningful way. 
+
+
+```{r}
+data_NA <- data.frame()
+
+for (i in 1:ncol(training)) {
+        NAcount <- (sum(is.na(training[,i])) / nrow(training))
+        data_NA <- rbind(data_NA, NAcount)
+}
+
+sum(data_NA)
+
+dataselect <- data_NA == 0
+training <- training[,dataselect]
+sum(is.na(training))
+
+training <- training[,-c(1:7)]
+```
+
+
+To get a better look at our outcome variable, "classe", we have made a simple bar plot and table, which reveals that while class "A" is the most common in this dataset, the division between the five classes is pretty equal. Each class separately has a large enough amount of observations in order to be included in the model. 
+
+
+```{r}
+summary(training$classe)
+ggplot(data = training, aes(x = classe), fill = classe) + geom_bar(aes(fill = classe)) + labs(title = "Counts for classe variable")
+```
+
+
+### Model Selection
+
+Before training our models, we have configured R to allow for parallel processing (see https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md). 
+
+
+```{r}
+cluster <- makeCluster(detectCores()-1)
+registerDoParallel(cluster)
+```
+
+
+As we are facing a classification problem, and our goal is to predict "class" from sensor data as accurately as possible, we have decided to fit a Random-Forest model. Even if the results from such a model will not be the most simple or interpretable, we expect model predictions to be highly accurate for this classification problem.
+
+In training our model, we let R design 200 trees (which is the default setting when using "rf" combined with "train" from the caret package. In order to ensure cross-validation, we have used the function TrainControl with method set to "cv", and number set to "5". R uses 5-fold cross-validation to build our model (and has thus used 3 ways to split our training set into training and test sets). 
+
+As shown below, the final model has used 52 predictors. This way, we were able to reach an estimated Accuracy of 98.81%. R estimates an Out Of Bag estimated error of 0.9%.
+
+As the figure below shows, the 5 most important variables are: roll_belt, pitch_forearm, yaw_belt, magnet_dumbbell_z, and pitch_belt.
+
+
+```{r,  message = FALSE, warning = FALSE}
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+outcome <- training[,53]
+predictors <- training[,-53]
+
+RFmdl3 <- train(predictors, outcome, data = training, method = "rf", ntree = 200, trControl = fitControl)
+RFmdl3
+RFmdl3$finalModel
+
+stopCluster(cluster)
+registerDoSEQ()
+
+varImp <- varImp(RFmdl3)$importance
+head(varImp[order(varImp, decreasing = TRUE), , drop = FALSE])
+```
+
+### Testing Model Performance
+
+We then used the test-set we have created above to double-check if our model performs as estimated. First, we have made the same adjustments to the data in our testing set as we did for the training set (removing variables with almost 98% NA, removing first 7 variables).
+Using our random forest model, we have made predictions for our test data set. The confusionmatrix we then created based on our predictions and the actual 'classe' variable in the testing part of our dataset gave an accuracy of 99.15 on the test data set. This means we expect the out of sample error rate to be about 1-0.9915 = 0.0085 or 0.85%.
+
+
+```{r}
+testing_comp <- testing[,dataselect]
+testing <- testing_comp[,-c(1:7)]
+pred <- predict(RFmdl3, testing[,-53])
+confusionMatrix(pred, testing$classe)
+```
+
+### Prediction for quiz
+Below, you can also find the code we have used for the predictions on the test set we used for the quiz. The model estimated all 20 test cases correctly.
+
+
+```{r, eval  = FALSE}
+datatest <- read.csv("C:/Users/Renee/Desktop/Studie/Machine Learning/CourseProject/pml-testing.csv", na.strings = c("", "NA", "#DIV/0!"))
+
+datatest <- datatest[,dataselect]
+datatest <- datatest[,-c(1:7, 60)]
+
+outcome_test <- data.frame()
+for (i in 1:nrow(datatest)){
+pred2 <- predict(RFmdl3, data.frame(datatest[i,]))
+pred2 <- as.character(pred)
+outcome_test <- c(outcome_test, pred2)}
+outcome_test
+      
+```
+
